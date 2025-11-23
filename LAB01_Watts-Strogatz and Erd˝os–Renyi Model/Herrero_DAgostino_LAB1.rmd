@@ -1,0 +1,189 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+  word_document: default
+---
+
+# CSN - Lab_01
+
+Importing necessary libraries.
+
+```{r}
+library(igraph)
+library(emdbook)
+
+```
+
+## WS model normalized Clustering parameter and normalized Average Shortest Path Length vs rewiring probability
+
+```{r}
+
+# vector of values of p with logarithmic distance
+vec <- lseq(from = 0.0001, to = 1, length.out = 14) 
+n_reps <- 30   # number of repetitions
+
+# function to create a sample of n_reps WS models and storing clustering coefficients and aspl
+simulate_ws <- function(p, size = 1000, nei = 10, n_reps = 30) {
+  clustering <- numeric(n_reps)
+  aspl <- numeric(n_reps)
+  
+  for (i in 1:n_reps) {
+    g <- sample_smallworld(dim = 1, size = size, nei = nei, p = p)
+    
+    # check connectivity
+    if (!is_connected(g)) {
+      stop(
+        paste0("Graph with n = ", n, " (rep ", i, ") is not connected.\n",
+               "Please restart.")
+      )
+    }
+    clustering[i] <- transitivity(g)
+    aspl[i]   <- average.path.length(g)
+  }
+  
+  # storing means and standard deviations of diam and clust on the n sample
+  list(
+    coef_mean = mean(clustering),
+    coef_sd   = sd(clustering),
+    spl_mean   = mean(aspl),
+    spl_sd     = sd(aspl)
+  )
+}
+
+# calling the function built above on every value of p
+results <- lapply(vec, simulate_ws, n_reps = n_reps)
+
+# results 
+coef_mean <- sapply(results, function(x) x$coef_mean)
+coef_sd   <- sapply(results, function(x) x$coef_sd)
+spl_mean   <- sapply(results, function(x) x$spl_mean)
+spl_sd     <- sapply(results, function(x) x$spl_sd)
+
+# normalization of the result to create a cleaner plot
+coef_norm <- coef_mean / max(coef_mean)
+spl_norm   <- spl_mean / max(spl_mean)
+coef_se   <- coef_sd / max(coef_mean) / sqrt(n_reps)    # standard error on the average
+spl_se     <- spl_sd / max(spl_mean) / sqrt(n_reps)     # standard error on the average
+
+```
+
+The plotted points represent the **normalized mean values** of clustering and shortest path length over multiple simulations (n = 30).\
+Error bars indicate **approximate 95% confidence intervals**, calculated as ± 2.045 times the normalized standard error of the mean. The ± 2.045 terms comes from the t-student statistics confidence intervals with 29 degrees of freedom.\
+We can choose a greater value of n to obtain a more reliable approximation.
+
+```{r}
+
+# plot
+plot(vec, spl_norm, type = "b", pch = 20, col = "blue", cex = 0.5,
+     log = "x",                      
+     xlab = "Rewiring probability (p, log scale)",
+     ylab = "Normalized values",
+     ylim = c(0, 1.1),
+     xlim = c(1e-04, 1))
+
+# errorbars for the average shortest path length
+arrows(vec, spl_norm - 2.045*spl_se, vec, spl_norm + 2.045*spl_se,
+       angle = 90, code = 3, length = 0.05, col = "blue")
+
+# clustering coefficients plot
+lines(vec, coef_norm, type = "b", pch = 20, col = "red", cex = 0.5)
+
+# errorbars for clustering coefficients
+arrows(vec, coef_norm - 2.045*coef_se, vec, coef_norm + 2.045*coef_se,
+       angle = 90, code = 3, length = 0.05, col = "red")
+
+# symbolic treshold for a WS graph with low average shortest path length but high clustering coefficient
+abline(v = 0.01, col = "darkgreen", lty = 2, lwd = 1)
+
+legend("topright",
+       legend = c("Normalized average shortest path length", 
+                  "Normalized clustering", 
+                  "Low aspl, high clustering"),
+       col = c("blue", "red", "darkgreen"),
+       cex = 0.6,
+       horiz = FALSE,
+       lty = c(1, 1, 2),
+       pch = c(20, 20, NA))
+```
+
+Narrow bars indicate a very precise estimate, while wider bars mean higher variability between simulations.\
+Overall, the observed trends in the plots are supported by the consistency of the replicates, as indicated by the confidence intervals around the means. This suggests that the trends reflect systematic changes with the network parameters rather than random fluctuations between simulations.
+
+## ER networks diameter vs number of nodes
+
+```{r}
+library(igraph)
+
+# we choose a factor 4 * ln(n)/n to increase the probability for the graph to be connected. We start our n's from n = 10 in order to have a probability always less than 1. With smaller values of n you may have to decrease the factor 4.
+
+p <- function(n) 4 * log(n) / n
+n_reps <- 30
+
+# simulate ER graphs for a single n and store APL across repetitions
+simulate_ER <- function(n, n_reps = 30) {
+  apl <- numeric(n_reps)
+  for (i in seq_len(n_reps)) {
+    g <- sample_gnp(n = n, p = p(n))
+    
+    # check connectivity
+    if (!is.connected(g)) {
+      stop(
+        paste0("Graph with n = ", n, " (rep ", i, ") is not connected.\n",
+               "Please restart.")
+      )
+    }
+    
+    apl[i] <- average.path.length(g, directed = FALSE, unconnected = FALSE)
+  }
+  list(sp_mean = mean(apl), sp_sd = sd(apl))
+}
+
+# log-spaced n, forced to unique integers
+ns <- as.integer(lseq(from = 10, to = 10000, length.out = 15))
+
+# run once per n
+results <- lapply(ns, simulate_ER, n_reps = 30)
+
+sp_mean <- sapply(results, `[[`, "sp_mean")
+sp_sd   <- sapply(results, `[[`, "sp_sd")
+
+sp_se     <- sp_sd / sqrt(n_reps)     # standard error on the average
+
+```
+
+Here we are plotting the data and we can clearly see a slow roughly logarithmic increase in the average shortest path length at the increase of the number of nodes.
+
+```{r}
+
+# plot
+plot(ns, sp_mean, type = "b", pch = 20, col = "blue", cex = 0.5,
+     xlab = "Number of nodes",
+     ylab = "Average Shortest-Path length",
+    )
+
+# errorbars for the diameter
+arrows(ns, sp_mean - 2.045*sp_se, ns, sp_mean + 2.045*sp_se,
+       angle = 90, code = 3, length = 0.05, col = "blue")
+```
+
+If we put the x-axis in a log-scale, though, we can clearly see that the tendency is not perfectly linear, but slightly curved, that would lead to a visible pattern in the residual of an hypotetical linear regression. This proves that the assumption of log(n) is not exact, but there are some additional not negligble corrections.
+
+```{r}
+# Plot with log-scaled x-axis
+plot(ns, sp_mean, type = "b", pch = 20, col = "blue", cex = 0.5,
+     xlab = "Number of nodes (log scale)",
+     ylab = "Average Shortest-Path length",
+     log = "x")
+
+# 95% confidence intervals for the aspl
+arrows(ns, sp_mean - 2.045*sp_se, ns, sp_mean + 2.045*sp_se,
+       angle = 90, code = 3, length = 0.05, col = "blue")
+
+```
+
+```         
+```

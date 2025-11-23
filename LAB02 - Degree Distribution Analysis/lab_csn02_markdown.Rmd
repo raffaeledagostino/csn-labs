@@ -1,0 +1,937 @@
+---
+title: "CSN_LAB02"
+author: "Raffaele D'Agostino, Gabriele Villa"
+date: "2025-10-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LAB02
+
+#### Create the network and the degree sequence for each language
+
+Imported necessary libraries
+
+```{r}
+library(igraph)
+library(dplyr)
+
+```
+
+Imported dataset and preprocessed it. In the preprocessing step, we excluded the lines starting with `#` as well as those whose IDs are represented by a number followed by a hyphen and another number (e.g., `5-6`).
+
+```{r}
+base_dir <- "./pud"
+files <- list.files(path = base_dir,
+                    pattern = "pud-ud-test\\.conllu$",
+                    recursive = TRUE,
+                    full.names = TRUE)
+create.indegree.sequences <- function(){
+for (f in files) {
+  lines=readLines(f,encoding = "UTF-8")
+  # Sentence splitting
+  sentence_blocks <- split(lines, cumsum(grepl("^# sent_id", lines)))
+  
+  parse_sentence <- function(block) {
+    token_lines <- grep("^[0-9]+\\t", block, value = TRUE)
+    if (length(token_lines) == 0) return(NULL)
+    
+    df <- read.table(text = token_lines, sep = "\t", header = FALSE, quote = "", fill = TRUE)
+    
+    # assign names to the columns of the dataframe
+    colnames(df)[1:8] <- c("ID", "FORM", "LEMMA", "UPOS", "XPOS", "FEATS", "HEAD", "DEPREL")
+    
+    # remove multitoken rows (compound words)
+    df <- df[!grepl("-", df$ID), ]
+    
+    df$ID <- as.numeric(df$ID)
+    df$HEAD <- as.numeric(df$HEAD)
+    
+    return(df)
+  }
+  
+  sentences <- lapply(sentence_blocks, parse_sentence)
+  sentences <- sentences[!sapply(sentences, is.null)]
+  
+  # extract language name
+  parent_folder <- basename(dirname(f))     
+  lang_name <- sub("^UD_(.*)-PUD$", "\\1", parent_folder)
+  
+  edges_all <- do.call(rbind, lapply(sentences, function(df) {
+    # Apply a different approach for Portuguese and Korean 
+    col_to_use <- if (lang_name %in% c("Portuguese", "Korean")) "FORM" else "LEMMA"
+    
+    df %>%
+      # keep words with head different from 0
+      filter(HEAD != 0) %>%
+      mutate(
+        head_value = df[[col_to_use]][match(HEAD, df$ID)],
+        token_value = df[[col_to_use]][match(ID, df$ID)]
+      ) %>%
+      select(head_value, token_value)  # parent -> child
+  }))
+  
+  # Remove NAs
+  edges_all <- na.omit(edges_all)
+  
+  # Remove duplicate edges
+  edges_all <- unique(edges_all)
+  
+  # Create the directed graph
+  g <- graph_from_data_frame(edges_all, directed = TRUE)
+  
+  # extract in-degree sequence
+  indeg <- degree(g, mode = "in")
+  
+  # Extract numerical values and remove zeros
+  indeg_values <- as.numeric(indeg)
+  indeg_values <- indeg_values[indeg_values >=1]
+  
+  out_file <- paste0("./data/", lang_name, "_degree_sequence.txt")
+  
+  write(indeg_values, file = out_file, ncolumns = 1)
+}
+}
+
+
+# uncomment next line to create indegree sequences again (the folder "data" already contains them)
+
+#create.indegree.sequences()
+
+```
+
+#### Compute statistics and constants
+
+```{r}
+
+# create a summary of language + num of words + max indegree +  1/mean_indegree
+write_summary <- function(language,file) {
+   degree_sequence = read.table(file, header = FALSE)
+   cat(language,length(degree_sequence$V1),max(degree_sequence$V1),sum(degree_sequence$V1)/length(degree_sequence$V1),length(degree_sequence$V1)/sum(degree_sequence$V1),"\n")
+}
+
+source = read.table("list.txt",
+         sep=",",
+         header = TRUE,     
+         as.is = c("language","file") 
+        )
+for (x in 1:nrow(source)) {
+    write_summary(source$language[x], source$file[x])
+}
+```
+
+Build a dataframe with relevant constants to be used later.
+
+```{r}
+results_list <- list()
+
+for (x in 1:nrow(source)) {
+    degree_sequence <- read.table(source$file[x], header = FALSE)$V1
+    
+    N <- length(degree_sequence)            # length
+    M <- sum(degree_sequence)               # degrees sum
+    M_prime <- sum(log(degree_sequence))    # log degrees sum
+
+    #lfactorial computes exactly log(k_i!)    
+    C <- sum(lfactorial(degree_sequence))
+    
+    # results vector concatenation
+    res <- c(
+      source$language[x],
+      N,
+      M,
+      M_prime,
+      C
+    )
+    
+    results_list[[x]] <- res
+}
+
+# create a dataframe with useful constants for later minus-loglikelihood calulations
+constants_df <- as.data.frame(do.call(rbind, results_list), stringsAsFactors = FALSE)
+constants_df[,2:5] <- lapply(constants_df[,2:5], as.numeric)
+
+colnames(constants_df) <- c("language", "N", "M", "M_prime", "C")
+
+print(constants_df)
+```
+
+Build Table 1 with useful statistics and standard deviations.
+
+```{r}
+results_list <- list()
+
+for (x in 1:nrow(source)) {
+  degree_sequence <- read.table(source$file[x], header = FALSE)$V1
+  
+  N <- length(degree_sequence)
+  M <- sum(degree_sequence)
+  
+  mean_k <- M / N
+  sd_k <- round(sd(degree_sequence)/sqrt(N-1), 3)
+  # error on the inverse of the mean degree computed by error propagation formulas
+  err_inv_mean_k <- round(sd_k / (mean_k^2), 3)
+  
+  res <- c(
+    source$language[x],
+    N,
+    max(degree_sequence),
+    round(mean_k, 3),                  # M/N
+    round(1 / mean_k, 3),              # N/M
+    sd_k,                              # std dev
+    err_inv_mean_k           
+  )
+  
+  results_list[[x]] <- res
+}
+
+starting_points <- as.data.frame(do.call(rbind, results_list), stringsAsFactors = FALSE)
+starting_points[, 2:7] <- lapply(starting_points[, 2:7], as.numeric)
+colnames(starting_points) <- c("language", "N", "maximum_degree", "M_over_N", "N_over_M", "sd_mean_degree", "err_N_over_M")
+
+print(starting_points)
+```
+
+#### Negative Log-likelihood functions
+
+We calculated the following negative log-likelihood functions.
+
+Every function takes as argument a language in order to access to useful constants for that specific language. Then it computes the negative log-likelihood with proper parameters.
+
+-   Zeta minus log-likelihood function:
+
+```{r}
+library(VGAM)
+
+minus_log_likelihood_zeta <- function(lang) {
+  M_prime <- as.numeric(constants_df[constants_df$language == lang, "M_prime"])
+  N <- as.numeric(constants_df[constants_df$language == lang, "N"])
+  
+  function(gamma) {
+    if (gamma <= 1) return(Inf)
+    gamma * M_prime + N * log(zeta(gamma))
+  }
+}
+```
+
+-   Displaced Poisson minus log-likelihood function:
+
+```{r}
+minus_log_likelihood_poisson = function(lang) {
+  
+  M <- as.numeric(constants_df[constants_df$language == lang, "M"])
+  C <- as.numeric(constants_df[constants_df$language == lang, "C"])
+  N <- as.numeric(constants_df[constants_df$language == lang, "N"])
+
+  function(lambda) {
+    return(-(M*log(lambda)-N*(lambda+log(1-exp(-lambda)))-C)) 
+  }
+  
+}
+```
+
+-   Displaced Geometric minus log-likelihood function:
+
+```{r}
+minus_log_likelihood_geom <- function(lang) {
+  M <- as.numeric(constants_df[constants_df$language == lang, "M"])
+  N <- as.numeric(constants_df[constants_df$language == lang, "N"])
+
+  function(q) {
+    return((N - M) * log(1-q) - N * log(q)) 
+  }
+  
+}
+```
+
+-   Right-truncated minus log-likelihood zeta
+
+```{r}
+# normalization factor of the rigth truncated zeta function
+H_zetatrunc <- function(gamma, k_max) {
+  
+  if (gamma <= 0) stop("gamma must be positive")
+  H_Ns <- sum(1 / (1:(k_max))^gamma)
+  
+  return(H_Ns)
+}
+
+minus_log_likelihood_right_trunc_zeta <- function(lang){
+  M_prime <- as.numeric(constants_df[constants_df$language == lang, "M_prime"])
+  N <- as.numeric(constants_df[constants_df$language == lang, "N"])
+  
+  function(gamma, k_max){  
+    return(gamma * M_prime + N * log(H_zetatrunc(gamma, k_max)))
+  }
+}
+```
+
+-   Altmann minus log-likelihood function
+
+```{r}
+minus_log_likelihood_altmann <- function(lang) {
+  N <- as.numeric(constants_df[constants_df$language == lang, "N"])
+  M_prime <- as.numeric(constants_df[constants_df$language == lang, "M_prime"])
+  M <- as.numeric(constants_df[constants_df$language == lang, "M"])
+  
+  function(gamma,delta) {
+    c <- 1 / sum((1:N)^(-gamma) * exp(-delta * (1:N)))
+    return (-(N*log(c)-gamma*M_prime-delta*M))
+  }
+}
+```
+
+Get AIC function
+
+```{r}
+get_AIC <- function(m2logL,K,N) {
+m2logL + 2*K*N/(N-K-1) # AIC with a correction for sample size
+}
+```
+
+#### Estimation of the parameters
+
+```{r}
+library(stats4)
+
+list_pois = c()
+list_geom = c()
+list_zeta = c()
+list_zeta_trunc_gamma = c()
+list_zeta_trunc_kmax = c()
+
+list_lang = c()
+
+sd_pois = c()                 
+sd_geom = c()                 
+sd_zeta = c()                 
+sd_zeta_trunc_gamma = c()     
+
+table_aic = data.frame()
+table_delta_aic = data.frame()
+
+for (i in 1:nrow(constants_df)) {
+  list_AIC = c()
+  row = constants_df[i, ]
+  lang = row$language
+  list_lang = c(list_lang, lang)
+
+  
+  M_over_N = as.numeric(constants_df[constants_df$language == lang, "M"]) /
+              as.numeric(constants_df[constants_df$language == lang, "N"])
+  N_over_M = 1 / M_over_N
+  N = as.numeric(constants_df[constants_df$language == lang, "N"])
+  max_deg = as.numeric(starting_points[starting_points$language == lang, "maximum_degree"])
+  
+  # Log-likelihood functions for each specific language
+  like_lang_zeta = minus_log_likelihood_zeta(lang)
+  like_lang_pois = minus_log_likelihood_poisson(lang)
+  like_lang_geom = minus_log_likelihood_geom(lang)
+  like_lang_ztrunc = minus_log_likelihood_right_trunc_zeta(lang)
+  
+  # MLE fits
+  mle_zeta <- mle(
+    like_lang_zeta,
+    start = list(gamma = 2),
+    method = "L-BFGS-B",
+    lower = c(gamma = 1 + 1e-9)
+  )
+  
+  mle_pois <- mle(
+    like_lang_pois,
+    start = list(lambda = M_over_N),
+    method = "L-BFGS-B",
+    lower = c(lambda = 1e-9),
+  )
+  
+  mle_geom <- mle(
+    like_lang_geom,
+    start = list(q = N_over_M),
+    method = "L-BFGS-B",
+    lower = c(q = 1e-9),
+    upper = c(q = 1 - 1e-9)
+  )
+  
+  # the mle_zeta_trunc has k_max fixed because we proved in the report that the value k_max = max_deg always minimizes the negative loglikelihood w.r.t. the parameter k_max.
+  
+  mle_zeta_trunc <- mle(
+    function(gamma) like_lang_ztrunc(gamma, k_max = max_deg),
+    start = list(gamma = 2),
+    method = "L-BFGS-B",
+    lower = c(gamma = 1 + 1e-9)
+  )
+  
+  # extract -2 log L for AIC
+  m2logL_pois = attributes(summary(mle_pois))$m2logL
+  m2logL_geom = attributes(summary(mle_geom))$m2logL
+  m2logL_zeta = attributes(summary(mle_zeta))$m2logL
+  m2logL_zetatrunc = attributes(summary(mle_zeta_trunc))$m2logL
+  
+  # Compute AIC for each model
+  list_AIC <- c(
+    lang,
+    round(as.numeric(get_AIC(m2logL_pois, 1, N)),2),
+    round(as.numeric(get_AIC(m2logL_geom, 1, N)),2),
+    round(as.numeric(get_AIC(2 * like_lang_zeta(gamma=2), 0, N)),2),
+    round(as.numeric(get_AIC(m2logL_zeta, 1, N)),2),
+    round(as.numeric(get_AIC(m2logL_zetatrunc, 2, N)),2)
+  )
+  
+  best_AIC <- round(min(as.numeric(list_AIC[2:6])),2)
+  best_model <- c("Poisson", "Geometric", "Zeta with gamma = 2", "Zeta", "Zeta Trunc")[which.min(as.numeric(list_AIC[2:6]))]
+  
+  # table with delta AIC
+  delta_AIC <- c(list_AIC[1], as.numeric(list_AIC[2:6]) - best_AIC, best_AIC, best_model)
+  table_delta_aic = rbind(table_delta_aic, delta_AIC)
+  
+  # table with AICs
+  full_AIC <- c(list_AIC, best_AIC, best_model)
+  table_aic = rbind(table_aic, full_AIC)
+  
+  colnames(table_delta_aic) = c(
+    'Language', 'ΔAIC pois', 'ΔAIC geom', 'ΔAIC zeta gamma=2', 'ΔAIC zeta', 'ΔAIC zeta trunc',
+    'Best AIC', 'Best model'
+  )
+  table_delta_aic[, 2:6] <- lapply(table_delta_aic[, 2:6], as.numeric)
+  
+  colnames(table_aic) = c(
+    'Language', 'AIC pois', 'AIC geom', 'AIC zeta, gamma=2', 'AIC zeta', 'AIC zeta trunc',
+    'Best AIC', 'Best model'
+  )
+  table_aic[, 2:6] <- lapply(table_aic[, 2:6], as.numeric)
+    
+  # Store MLE coefficients
+  list_pois = c(list_pois, round(coef(mle_pois)[["lambda"]], 4))
+  list_zeta = c(list_zeta, round(coef(mle_zeta)[["gamma"]], 4))
+  list_geom = c(list_geom, round(coef(mle_geom)[["q"]], 4))
+  list_zeta_trunc_gamma = c(list_zeta_trunc_gamma, round(coef(mle_zeta_trunc)[["gamma"]], 4))
+  list_zeta_trunc_kmax = c(list_zeta_trunc_kmax, max_deg)
+  
+  # Standard deviations on parameters 
+  sd_pois = c(sd_pois, round(sqrt(diag(vcov(mle_pois)))[["lambda"]], 4))
+  sd_geom = c(sd_geom, round(sqrt(diag(vcov(mle_geom)))[["q"]], 4))
+  sd_zeta = c(sd_zeta, round(sqrt(diag(vcov(mle_zeta)))[["gamma"]], 4))
+  sd_zeta_trunc_gamma = c(sd_zeta_trunc_gamma, round(sqrt(diag(vcov(mle_zeta_trunc)))[["gamma"]], 4))
+  
+
+}
+
+
+st_devs = as.data.frame(cbind(list_lang, sd_pois, sd_geom, sd_zeta, sd_zeta_trunc_gamma))
+colnames(st_devs) = c("Language", "sd_pois", "sd_geom", "sd_zeta", "sd_zeta_trunc")
+
+results = as.data.frame(cbind(list_lang, list_pois, list_geom, list_zeta, list_zeta_trunc_gamma, list_zeta_trunc_kmax))
+results[, 2:6] <- lapply(results[, 2:6], as.numeric)
+colnames(results) = c("Language", "lambda", "q", "gamma1", "gamma2", "kmax")
+
+results
+st_devs
+table_aic
+table_delta_aic
+```
+
+Compute Root Mean Squared Errors on every fitted model.
+
+```{r}
+RMSE_table = data.frame()
+
+d_pois <- function(k, lambda) dpois(k, lambda)/(1-exp(-lambda))
+d_geom <- function(k, q) dgeom(k - 1, prob = q)
+d_zeta <- function(k, gamma) dzeta(k, s = gamma)
+d_zeta_trunc <- function(k, gamma, kmax) k^(-gamma) / sum((1:kmax)^(-gamma))
+
+for (i in 1:nrow(results)) {
+  row = results[i, ]
+  lang = row$Language
+
+  max_deg = as.numeric(starting_points[starting_points$language == lang, "maximum_degree"])
+  
+  file_path <- source$file[source$language == lang]
+
+  k_raw <- read.table(file_path, header = FALSE)$V1  
+  k_raw <- as.numeric(k_raw)
+  tab <- table(k_raw)
+  degrees_obs <- as.integer(names(tab))
+  counts <- as.numeric(tab)
+  support <- 1:max_deg
+  
+  P_emp <- numeric(length(support))
+  P_emp[match(degrees_obs, support)] <- counts / sum(counts)
+  
+  lambda = row$lambda
+  q = row$q
+  gamma1 = row$gamma1
+  gamma2 = row$gamma2
+  k_max = max_deg
+  
+  pmf_pois = d_pois(support, lambda)
+  pmf_geom = d_geom(support, q)
+  pmf_zeta_2 = d_zeta(support, 2)
+  pmf_zeta = d_zeta(support, gamma1)
+  pmf_zeta_trunc = d_zeta_trunc(support, gamma2, k_max)
+  
+  rmse_pois <- sqrt(mean((P_emp[degrees_obs] - pmf_pois[degrees_obs])^2))
+  rmse_geom <- sqrt(mean((P_emp[degrees_obs] - pmf_geom[degrees_obs])^2))
+  rmse_zeta_2 <- sqrt(mean((P_emp[degrees_obs] - pmf_zeta_2[degrees_obs])^2))
+  rmse_zeta <- sqrt(mean((P_emp[degrees_obs] - pmf_zeta[degrees_obs])^2))
+  rmse_zeta_trunc <- sqrt(mean((P_emp[degrees_obs] - pmf_zeta_trunc[degrees_obs])^2))
+  
+  rmse_pois <- signif(rmse_pois, 2)
+  rmse_geom <- signif(rmse_geom, 2)
+  rmse_zeta_2 <- signif(rmse_zeta_2, 2)
+  rmse_zeta <- signif(rmse_zeta, 2)
+  rmse_zeta_trunc <- signif(rmse_zeta_trunc, 2)
+  
+  RMSE_table <- rbind( RMSE_table, data.frame( Language = lang, RMSE_pois = rmse_pois, RMSE_geom = rmse_geom, RMSE_zeta_2 = rmse_zeta_2, RMSE_zeta = rmse_zeta, RMSE_zeta_trunc = rmse_zeta_trunc) ) 
+  
+  } 
+
+
+RMSE_table
+```
+
+#### Consider Altmann distribution
+
+```{r}
+library(stats4)
+
+list_lang_alt = c()
+
+list_alt_gamma = c()
+list_alt_delta = c()
+sd_alt_gamma = c()
+sd_alt_delta = c()
+
+list_AIC_alt = c()
+list_deltaAIC = c()
+
+for (i in 1:nrow(constants_df)) {
+  row = constants_df[i, ]
+  lang = row$language
+  list_lang_alt = c(list_lang_alt, lang)
+  
+  N = as.numeric(constants_df[constants_df$language == lang, "N"])
+  
+  like_lang_alt = minus_log_likelihood_altmann(lang)
+  
+  mle_alt <- mle(
+      like_lang_alt,
+      start = list(gamma = 2, delta = 1e-4),
+      method = "L-BFGS-B",
+      lower = c(gamma = 1+1e-9, delta = 0)
+    )
+
+  gamma = coef(mle_alt)[["gamma"]]
+  delta = coef(mle_alt)[["delta"]]
+  
+  sd_gamma = sqrt(diag(vcov(mle_alt)))[["gamma"]]
+  sd_delta = sqrt(diag(vcov(mle_alt)))[["delta"]]
+  
+  gamma = round(gamma, 4)
+  delta = round(delta, 5)
+  sd_gamma = round(sd_gamma, 4)
+  sd_delta = round(sd_delta, 5)
+  
+  list_alt_gamma = c(list_alt_gamma, gamma)
+  list_alt_delta = c(list_alt_delta, delta)
+  sd_alt_gamma = c(sd_alt_gamma, sd_gamma)
+  sd_alt_delta = c(sd_alt_delta, sd_delta)
+  
+  m2logL_alt = attributes(summary(mle_alt))$m2logL
+  AIC_alt = round(as.numeric(get_AIC(m2logL_alt, 2, N)), 2)
+  list_AIC_alt = c(list_AIC_alt, AIC_alt)
+  
+  zeta_AIC_prev = as.numeric(table_aic[table_aic$Language == lang, "AIC zeta"])
+  zetatrunc_AIC_prev = as.numeric(table_aic[table_aic$Language == lang, "AIC zeta trunc"])
+
+  AIC_alt = as.numeric(list_AIC_alt[list_lang_alt == lang])
+  best_aic = round(min(c(zeta_AIC_prev, zetatrunc_AIC_prev, AIC_alt)), 2)
+  
+  delta_aic = c(zeta_AIC_prev, zetatrunc_AIC_prev, AIC_alt) - best_aic
+  
+  list_deltaAIC = rbind(list_deltaAIC, delta_aic)
+}
+
+rownames(list_deltaAIC) <- NULL
+
+table_altmann_params = as.data.frame(cbind(
+  list_lang_alt,
+  list_alt_gamma,
+  sd_alt_gamma,
+  list_alt_delta,
+  sd_alt_delta
+))
+
+colnames(table_altmann_params) = c(
+  "Language",
+  "gamma_alt",
+  "sd_gamma_alt",
+  "delta_alt",
+  "sd_delta_alt"
+)
+
+table_altmann_AIC = as.data.frame(cbind(
+  list_lang_alt,
+  list_deltaAIC))
+
+colnames(table_altmann_AIC) = c(
+  "Language",
+  "ΔAIC_zeta",
+  "ΔAIC_zeta_trunc",
+  "ΔAIC_altmann"
+)
+
+table_altmann_params[, 2:5] <- lapply(table_altmann_params[, 2:5], as.numeric)
+table_altmann_AIC[, 2:4] <- lapply(table_altmann_AIC[, 2:4], as.numeric)
+
+table_altmann_params
+table_altmann_AIC
+```
+
+```{r}
+RMSE_altmann = c()
+
+d_altmann <- function(k, gamma, delta, N) {
+  if (any(N <= 0)) stop("k must be positive integers (>=1).")
+  support <- 1:N
+  pmf <- support^(-gamma) * exp(-delta * support)
+  pmf <- pmf / sum(pmf)        
+  return(pmf[k])
+}
+
+
+for (i in 1:nrow(table_altmann_params)) {
+  row = table_altmann_params[i, ]
+  lang = row$Language
+
+  max_deg = as.numeric(starting_points[starting_points$language == lang, "maximum_degree"])
+  N = as.numeric(starting_points[starting_points$language == lang, "N"])
+
+  file_path <- source$file[source$language == lang]
+  
+  k_raw <- read.table(file_path, header = FALSE)$V1  
+  k_raw <- as.numeric(k_raw)
+  tab <- table(k_raw)
+  degrees_obs <- as.integer(names(tab))
+  counts <- as.numeric(tab)
+  support <- 1:max_deg
+  
+  P_emp <- numeric(length(support))
+  P_emp[match(degrees_obs, support)] <- counts / sum(counts)
+  
+  gamma = row$gamma_alt
+  delta = row$delta_alt
+  
+  pmf_alt = d_altmann(support, gamma, delta, N)
+  
+  rmse_alt <- sqrt(mean((P_emp - pmf_alt)^2))
+  rmse_alt <- signif(rmse_alt, 2)
+  
+  RMSE_altmann = c(RMSE_altmann, rmse_alt)
+  
+  
+}
+
+rmse_altmann_table = cbind(list_lang, RMSE_altmann)
+rmse_altmann_table = data.frame(rmse_altmann_table)
+rmse_altmann_table[,2] = as.numeric(rmse_altmann_table[,2])  
+colnames(rmse_altmann_table) = c("Language", "RMSE altmann")
+
+rmse_altmann_table
+```
+
+### Plotting empirical and fitted distributions
+
+Plot of theoretical Zeta and Zeta truncated distributions over empirical data
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(patchwork)
+
+plot_zeta_and_trunc <- function(source, results, output_dir_zeta = "./plots_zeta", output_dir_zeta_trunc = "./plots_zeta_trunc") {
+  
+  if (!dir.exists(output_dir_zeta)) dir.create(output_dir_zeta)
+  if (!dir.exists(output_dir_zeta_trunc)) dir.create(output_dir_zeta_trunc)
+  
+  plot_list_zeta <- list()
+  plot_list_ztrunc <- list()
+  
+  for (i in 1:nrow(results)) {
+    list_AIC = c()
+    row = results[i, ]
+    lang = row$Language
+    list_lang = c(list_lang, lang)
+  
+    max_deg = as.numeric(starting_points[starting_points$language == lang, "maximum_degree"])
+    
+    file_path <- source$file[source$language == lang]
+  
+    lambda = row$lambda
+    q = row$q
+    gamma1 = row$gamma1
+    gamma2 = row$gamma2
+    k_max = max_deg
+    
+    k_raw <- read.table(file_path, header = FALSE)$V1  
+    k_raw <- as.numeric(k_raw)
+    
+    tab <- table(k_raw)
+    degrees_obs <- as.integer(names(tab))
+    counts <- as.numeric(tab)
+    P_emp <- counts / sum(counts)
+    
+    fit_zeta <- d_zeta(degrees_obs, gamma1)
+    fit_zeta_trunc <- d_zeta_trunc(degrees_obs, gamma2, k_max)
+    
+    fit_zeta <- fit_zeta / sum(fit_zeta)
+    fit_zeta_trunc <- fit_zeta_trunc / sum(fit_zeta_trunc)
+    
+    df_plot_zeta <- data.frame(k = degrees_obs, Observed = P_emp, Fitted = fit_zeta)
+    df_plot_ztrunc <- data.frame(k = degrees_obs, Observed = P_emp, Fitted = fit_zeta_trunc)
+
+    
+    ymin_zeta <- 10^(floor(log10(min(df_plot_zeta$Observed[df_plot_zeta$Observed > 0]))) - 1)
+    ymin_ztrunc <- 10^(floor(log10(min(df_plot_ztrunc$Observed[df_plot_ztrunc$Observed > 0]))) - 1)
+    
+    # Plot Zeta
+    p_zeta <- ggplot(df_plot_zeta, aes(x = k)) +
+      geom_point(aes(y = Observed), color = "blue", size = 1) +
+      geom_line(aes(y = Fitted), color = "red", linewidth = 0.5) +
+      scale_x_log10() +
+      scale_y_log10(labels = trans_format("log10", math_format(10^.x)), limits = c(ymin_zeta, 1)) +
+      theme_minimal(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
+        panel.grid.minor = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_text(size = 8),
+        axis.line = element_line(color = "black", linewidth = 0.4)
+      ) +
+      labs(title = sprintf("%s – Zeta (γ = %.5f)", lang, gamma1)) +
+      annotate("text", x = max(support), y = 0.8, label = NULL , hjust = 1, color = "red", size = 3)
+    
+    # Plot Zeta Trunc
+    p_ztrunc <- ggplot(df_plot_ztrunc, aes(x = k)) +
+      geom_point(aes(y = Observed), color = "blue", size = 1) +
+      geom_line(aes(y = Fitted), color = "green", linewidth = 0.5) +
+      scale_x_log10() +
+      scale_y_log10(labels = trans_format("log10", math_format(10^.x)), limits = c(ymin_ztrunc, 1)) +
+      theme_minimal(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
+        panel.grid.minor = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_text(size = 8),
+        axis.line = element_line(color = "black", linewidth = 0.4)
+      ) +
+      labs(title = sprintf("%s – Zeta Trunc (γ = %.5f, kmax = %d)", lang, gamma2, k_max)) +
+      annotate("text", x = max(support), y = 0.8, label = NULL, hjust = 1, color = "green", size = 3)
+    
+    # individual Save 
+    ggsave(filename = file.path(output_dir_zeta, paste0(lang, "_zeta.png")), plot = p_zeta, width = 5, height = 5, dpi = 300)
+    ggsave(filename = file.path(output_dir_zeta_trunc, paste0(lang, "_zeta_trunc.png")), plot = p_ztrunc, width = 5, height = 5, dpi = 300)
+    
+    plot_list_zeta[[lang]] <- p_zeta
+    plot_list_ztrunc[[lang]] <- p_ztrunc
+  }
+  
+  # combined plots
+  combined_zeta <- wrap_plots(plot_list_zeta, ncol = 3, nrow = 7) +
+    plot_annotation(
+      title = "Zeta Fits Across 21 Languages",
+      theme = theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5))
+    )
+  
+  combined_ztrunc <- wrap_plots(plot_list_ztrunc, ncol = 3, nrow = 7) +
+    plot_annotation(
+      title = "Zeta Truncated Fits Across 21 Languages",
+      theme = theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5))
+    )
+  
+  ggsave(filename = file.path(output_dir_zeta, "all_languages_zeta.png"), plot = combined_zeta, width = 12, height = 28, dpi = 300)
+  ggsave(filename = file.path(output_dir_zeta_trunc, "all_languages_zeta_trunc.png"), plot = combined_ztrunc, width = 12, height = 28, dpi = 300)
+
+}
+```
+
+```{r}
+#uncomment next line to generate plots of zeta and zeta trunc functions.
+#plot_zeta_and_trunc(source, results)
+```
+
+Plot of theoretical Altmann distribution over empirical data
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(patchwork)
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(patchwork)
+
+plot_altmann <- function(source, table_altmann_params, output_dir_altmann = "./plots_altmann") {
+  
+  if (!dir.exists(output_dir_altmann)) dir.create(output_dir_altmann)
+  
+  plot_list_altmann <- list()
+  
+  for (i in 1:nrow(table_altmann_params)) {
+    row = table_altmann_params[i, ]
+    lang = row$Language
+    
+    max_deg = as.numeric(starting_points[starting_points$language == lang, "maximum_degree"])
+    file_path <- source$file[source$language == lang]
+    
+    gamma = row$gamma_alt
+    delta = row$delta_alt
+    
+    k_raw <- read.table(file_path, header = FALSE)$V1  
+    k_raw <- as.numeric(k_raw)
+    
+    tab <- table(k_raw)
+    degrees_obs <- as.integer(names(tab))
+    counts <- as.numeric(tab)
+    P_emp <- counts / sum(counts)
+  
+    fit_altmann <- d_altmann(degrees_obs, gamma, delta, N)
+    fit_altmann <- fit_altmann / sum(fit_altmann)
+    
+    df_plot_altmann <- data.frame(k = degrees_obs, Observed = P_emp, Fitted = fit_altmann)
+    
+    ymin_alt <- 10^(floor(log10(min(df_plot_altmann$Observed[df_plot_altmann$Observed > 0]))) - 1)
+    
+    # Plot Altmann
+    p_altmann <- ggplot(df_plot_altmann, aes(x = k)) +
+      geom_point(aes(y = Observed), color = "blue", size = 1) +
+      geom_line(aes(y = Fitted), color = "orange", linewidth = 0.5) +
+      scale_x_log10() +
+      scale_y_log10(labels = trans_format("log10", math_format(10^.x)), limits = c(ymin_alt, 1)) +
+      theme_minimal(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
+        panel.grid.minor = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_text(size = 8),
+        axis.line = element_line(color = "black", linewidth = 0.4)
+      ) +
+      labs(title = sprintf("%s – Altmann (γ = %.4f, δ = %.4f)", lang, gamma, delta)) +
+      annotate("text", x = max(degrees_obs), y = 0.8, label = NULL, hjust = 1, color = "orange", size = 3)
+    
+    ggsave(filename = file.path(output_dir_altmann, paste0(lang, "_altmann.png")),
+           plot = p_altmann, width = 5, height = 5, dpi = 300)
+    
+    plot_list_altmann[[lang]] <- p_altmann
+  }
+  
+  combined_altmann <- wrap_plots(plot_list_altmann, ncol = 3, nrow = 7) +
+    plot_annotation(
+      title = "Altmann Fits Across 21 Languages",
+      theme = theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5))
+    )
+  
+  ggsave(filename = file.path(output_dir_altmann, "all_languages_altmann.png"),
+         plot = combined_altmann, width = 12, height = 28, dpi = 300)
+  
+}
+
+#uncomment next line to save the plots
+#plot_altmann(source, table_altmann_params)
+```
+
+Comparison between the best Zeta truncated model against Altmann fit.
+
+```{r}
+plot_altmann_compare <- function(source, table_altmann_params, output_dir_altmann = "./plots_altmann_compare") {
+  
+  if (!dir.exists(output_dir_altmann)) dir.create(output_dir_altmann)
+  
+  plot_list <- list()
+  
+  for (i in 1:nrow(table_altmann_params)) {
+    row = table_altmann_params[i, ]
+    row2 = results[i, ]
+    lang = row$Language
+ 
+    gamma2 = row2$gamma2
+    
+    max_deg = as.numeric(starting_points[starting_points$language == lang, "maximum_degree"])
+    N = as.numeric(starting_points[starting_points$language == lang, "N"])
+
+    file_path <- source$file[source$language == lang]
+    
+    gamma = row$gamma_alt
+    delta = row$delta_alt
+    
+    k_raw <- read.table(file_path, header = FALSE)$V1  
+    k_raw <- as.numeric(k_raw)
+    
+    # empirical distr
+    tab <- table(k_raw)
+    degrees_obs <- as.integer(names(tab))
+    counts <- as.numeric(tab)
+    P_emp <- counts / sum(counts)
+    
+    fit_altmann <- d_altmann(degrees_obs, gamma, delta, N)
+    fit_zeta_trunc <- d_zeta_trunc(degrees_obs, gamma2, max_deg)
+    
+    fit_altmann <- fit_altmann / sum(fit_altmann)
+    fit_zeta_trunc <- fit_zeta_trunc / sum(fit_zeta_trunc)
+    
+    # Data frame for ggplot
+    df_plot <- data.frame(
+      k = rep(degrees_obs, 3),
+      Prob = c(P_emp, fit_altmann, fit_zeta_trunc),
+      Model = factor(rep(c("Empirical", "Altmann", "Best Zeta Truncated"), each = length(degrees_obs)),
+                     levels = c("Empirical", "Altmann", "Best Zeta Truncated"))
+    )
+    
+    ymin_plot <- 10^(floor(log10(min(P_emp[P_emp > 0]))) - 1)
+    
+    # Plot combined
+    p <- ggplot(df_plot, aes(x = k, y = Prob, color = Model, linetype = Model)) +
+      geom_point(data = subset(df_plot, Model == "Empirical"), size = 1) +
+      geom_line(data = subset(df_plot, Model != "Empirical"), linewidth = 0.5) +
+      scale_x_log10() +
+      scale_y_log10(labels = trans_format("log10", math_format(10^.x)), limits = c(ymin_plot, 1)) +
+      scale_color_manual(values = c("blue", "#E69F00", "#009E73")) +
+      scale_linetype_manual(values = c("blank", "solid", "dashed")) +
+      theme_minimal(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 10),
+        panel.grid.minor = element_blank(),
+        axis.title = element_blank(),
+        axis.text = element_text(size = 8),
+        axis.line = element_line(color = "black", linewidth = 0.4)
+      ) +
+      labs(title = sprintf("%s Altmann vs Zeta Trunc\n(γ_alt = %.4f, γ_ztrunc = %.4f)", 
+                     lang, gamma, gamma2))
+    
+    # Salvataggio individuale
+    ggsave(filename = file.path(output_dir_altmann, paste0(lang, "_altmann_compare.png")),
+           plot = p, width = 5, height = 5, dpi = 300)
+    
+    plot_list[[lang]] <- p
+  }
+  
+  # Plot combined for all language
+  combined <- wrap_plots(plot_list, ncol = 3, nrow = 7) +
+    plot_annotation(
+      title = "Altmann vs Zeta truncated Fits Across 21 Languages",
+      theme = theme(plot.title = element_text(size = 18, face = "bold", hjust = 0.5))
+    )
+  
+  ggsave(filename = file.path(output_dir_altmann, "all_languages_altmann_compare.png"),
+         plot = combined, width = 12, height = 28, dpi = 300)
+  
+}
+
+#uncomment next line to save the plots 
+#plot_altmann_compare(source, table_altmann_params)
+```

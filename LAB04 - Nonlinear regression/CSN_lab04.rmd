@@ -1,0 +1,134 @@
+---
+title: "lab_csn04"
+output: html_document
+date: "2025-11-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(igraph)
+library(dplyr)
+source("funcs.R")
+source("plots_funcs.R")
+```
+
+Creating synctactic dependency trees and computing metrics.
+
+```{r}
+create.dependency.tree.metrics()
+```
+
+Checking metrics validity
+
+```{r}
+validate.dependency.metrics2()
+```
+
+Computing language statistics and storing them by language sorted by increasing number of vertices
+
+```{r}
+
+lang_data <- compute.language.statistics()
+
+```
+
+```{r}
+
+
+p_mu <- plot_mu_d_vs_mu_N(lang_data$summary)
+ggsave("mu_d_vs_mu_N.png", p_mu, width = 6, height = 5, dpi = 150)
+
+```
+
+```{r}
+
+grid_raw <- plot.loglog.dependency.length.grid.raw(lang_data)
+grid1 <- plot.loglog.dependency.length.grid(lang_data)
+grid2 <- plot.binned.variance.grid(lang_data, B = 1.18, min_count = 8, plot_type = "variance")
+grid3 <- plot.binned.histogram.grid(lang_data, B = 1.18, min_count = 8)
+grid4 <- plot.loglog.raw.with.binned.grid(lang_data, B = 1.18, min_count = 8)
+
+```
+
+```{r}
+aggregate = TRUE
+
+initial_params_binned <- find_initial_parameters_binned(lang_data, 
+                                                        B = 1.18, min_count = 8, 
+                                                        alpha = NULL, 
+                                                        use_binned_means = aggregate)
+
+
+results <- fit_all_models_binned(lang_data, 
+                                 initial_params_binned,
+                                 B = 1.18, min_count = 8,
+                                 use_binned_means = aggregate)
+
+print(results$results_df)
+print_best_models(results$results_df)
+
+cov_no_d  <- results$cov_results
+
+# uncomment to save covariance matrices plots
+#corr_plots_no_d <- plot_covariance_grids_plus(cov_results = cov_no_d, out_dir= "./ plots_corr_matrices_no_d")
+
+
+```
+
+```{r}
+
+
+initial_params <- find_initial_parameters_binned(lang_data, B = 1.18, 
+                                                 min_count = 8, 
+                                                 use_binned_means = TRUE)
+
+results_with_d <- fit_all_models_binned_with_d(lang_data, initial_params, 
+                                              B = 1.18, min_count = 8,
+                                              use_binned_means = TRUE)
+
+
+
+cov_results <- results_with_d$cov_results
+
+# uncomment to save covariance matrices plots
+#plots_cov <- plot_covariance_grids_plus(cov_results)
+
+
+```
+
+```{r}
+
+all_parameters <- extract_all_parameters(results$results_df, results_with_d$results_df)
+
+```
+
+```{r}
+
+aic_tables <- create_aic_tables(results$results_df, results_with_d$results_df)
+
+delta_aic_table <- aic_tables$delta_aic
+absolute_aic_table <- aic_tables$absolute_aic
+
+
+```
+
+```{r}
+
+residual_se_table <- create_residual_se_table(results$results_df, results_with_d$results_df)
+
+```
+
+```{r}
+
+best_params <- extract_best_model_parameters(results$results_df, results_with_d$results_df)
+
+```
+
+```{r}
+
+grid_plot <- plot_all_best_models_grid(lang_data, results$results_df, results_with_d$results_df, B = 1.18, min_count = 8)
+
+```
